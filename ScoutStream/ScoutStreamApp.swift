@@ -11,7 +11,13 @@ import SwiftUI
 struct ScoutStreamApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ZStack(alignment: .bottom) {
+                // Main content based on selected tab
+                NavigationView {
+                    HomeView()
+                }
+            }
+            .ignoresSafeArea(.keyboard)
         }
     }
 }
