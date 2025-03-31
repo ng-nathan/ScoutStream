@@ -9,165 +9,123 @@ import Foundation
 import CoreBluetooth
 import Combine
 
-class BluetoothManager: NSObject, ObservableObject {
-    // MARK: - Properties
-    
-    // Published properties to notify the UI
-    @Published var devices: [BluetoothDevice] = []
-    @Published var isScanning = false
-    
-    // Core Bluetooth properties
-    private var centralManager: CBCentralManager!
-    private var discoveredPeripherals = [String: CBPeripheral]()
-    
-    // Manufacturer data constants
-    private enum ManufacturerDataKeys {
-        static let temperature = 0x01
-        static let humidity = 0x02
-        static let velocity = 0x03
-        static let co2 = 0x04
+extension Data {
+    var hexDescription: String {
+        self.map { String(format: "%02X", $0) }.joined()
     }
+}
+
+@Observable
+final class BluetoothManager: NSObject {
+    // MARK: - Published Properties
+    
+    var devices: [BluetoothDevice] = []
+    var isScanning = false
+    var bluetoothState: CBManagerState = .unknown
+    
+    // MARK: - Private Properties
+    
+    private var centralManager: CBCentralManager!
+    private var discoveredPeripherals: [UUID: CBPeripheral] = [:]
     
     // MARK: - Initialization
     
     override init() {
         super.init()
-        centralManager = CBCentralManager(delegate: self, queue: nil)
+        
+        // Initialize with a restore identifier to support state restoration
+        let options: [String: Any] = [
+            CBCentralManagerOptionRestoreIdentifierKey: "ScoutStreamCentralManager"
+        ]
+        
+        centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
     }
     
     // MARK: - Public Methods
     
-    /// Start scanning for BLE devices with extended advertising data
     func startScanning() {
         guard centralManager.state == .poweredOn else {
             print("Bluetooth is not powered on")
             return
         }
         
-        // Clear the previous scan results
+        // Clear previous scan results
         devices.removeAll()
         discoveredPeripherals.removeAll()
         
-        // Start scanning with options to allow duplicate devices (to get RSSI updates)
-        // and to scan for devices that support extended advertising
-        let options: [String: Any] = [
+        // Configure scan options to allow duplicate device discovery for RSSI updates
+        let scanOptions: [String: Any] = [
             CBCentralManagerScanOptionAllowDuplicatesKey: true
         ]
         
-        centralManager.scanForPeripherals(withServices: nil, options: options)
+        centralManager.scanForPeripherals(withServices: nil, options: scanOptions)
         isScanning = true
+        print("Started scanning for BLE devices")
     }
     
-    /// Stop scanning for BLE devices
     func stopScanning() {
         centralManager.stopScan()
         isScanning = false
+        print("Stopped scanning for BLE devices")
     }
     
     // MARK: - Private Methods
     
-    /// Parse manufacturer data from advertisement data
-    private func parseManufacturerData(from advertisementData: [String: Any]) -> (temperature: Double?, humidity: Double?, velocity: Double?, co2: Int?) {
-        // Look for manufacturer data in the advertisement
-        guard let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else {
-            return (nil, nil, nil, nil)
-        }
-        
-        var temperature: Double?
-        var humidity: Double?
-        var velocity: Double?
-        var co2: Int?
-        
-        // Manufacturer data format:
-        // Byte 0-1: Manufacturer ID (e.g., 0xFFFF for test/custom)
-        // Remaining bytes: Key-Value pairs
-        // Each pair: 1 byte key, 2-4 bytes value depending on the type
-        
-        // Skip manufacturer ID (2 bytes)
-        var index = 2
-        
-        // Parse key-value pairs
-        while index < manufacturerData.count {
-            // Get the key
-            let key = manufacturerData[index]
-            index += 1
-            
-            // Parse values based on key
-            switch key {
-            case UInt8(ManufacturerDataKeys.temperature):
-                // Temperature as 2-byte value (0.1°C resolution)
-                if index + 1 < manufacturerData.count {
-                    let rawValue = UInt16(manufacturerData[index]) | (UInt16(manufacturerData[index + 1]) << 8)
-                    temperature = Double(rawValue) / 10.0
-                    index += 2
-                }
-                
-            case UInt8(ManufacturerDataKeys.humidity):
-                // Humidity as 2-byte value (0.1% resolution)
-                if index + 1 < manufacturerData.count {
-                    let rawValue = UInt16(manufacturerData[index]) | (UInt16(manufacturerData[index + 1]) << 8)
-                    humidity = Double(rawValue) / 10.0
-                    index += 2
-                }
-                
-            case UInt8(ManufacturerDataKeys.velocity):
-                // Velocity as 2-byte value (0.01 m/s resolution)
-                if index + 1 < manufacturerData.count {
-                    let rawValue = UInt16(manufacturerData[index]) | (UInt16(manufacturerData[index + 1]) << 8)
-                    velocity = Double(rawValue) / 100.0
-                    index += 2
-                }
-                
-            case UInt8(ManufacturerDataKeys.co2):
-                // CO2 as 2-byte value (1 ppm resolution)
-                if index + 1 < manufacturerData.count {
-                    let rawValue = UInt16(manufacturerData[index]) | (UInt16(manufacturerData[index + 1]) << 8)
-                    co2 = Int(rawValue)
-                    index += 2
-                }
-                
-            default:
-                // Unknown key, skip (assume 2-byte value)
-                index += 2
-            }
-        }
-        
-        return (temperature, humidity, velocity, co2)
+    private func isScoutDevice(name: String?) -> Bool {
+        guard let name else { return false }
+        return name.localizedCaseInsensitiveContains("scout")
     }
     
-    /// Update or add a device to the list
     private func updateDevice(peripheral: CBPeripheral, rssi: Int, advertisementData: [String: Any]) {
-        let identifier = peripheral.identifier.uuidString
-        
-        // Parse manufacturer data to get sensor readings
-        let sensorData = parseManufacturerData(from: advertisementData)
-        
         // Get device name (use identifier if no name is available)
-        let deviceName = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown Device"
+        let deviceName = peripheral.name ??
+                         advertisementData[CBAdvertisementDataLocalNameKey] as? String ??
+                         "Unknown Device"
         
-        // Check if this device is already in our list
-        if let index = devices.firstIndex(where: { $0.id.uuidString == identifier }) {
+        // Only process Scout devices
+        guard isScoutDevice(name: deviceName) else { return }
+        
+        let id = peripheral.identifier
+        
+        // Check if device exists in our list
+        let deviceIndex = devices.firstIndex { $0.id == id }
+        let existingDevice = deviceIndex.map { devices[$0] }
+        
+        // Initialize with existing data or nil
+        var temperature = existingDevice?.temperature
+        var humidity = existingDevice?.humidity
+        var velocity = existingDevice?.velocity
+        var co2 = existingDevice?.co2
+        
+        // Process manufacturer data if available
+        if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+           let stringData = String(data: manufacturerData, encoding: .utf8),
+           stringData.contains(",") {
+            
+            print("Raw manufacturer data: \(manufacturerData as NSData)")
+            
+            print("Device: \(deviceName), Data: \(stringData)")
+            
+            let (tempStr, humidStr, velStr, carbonDioxideStr) = parseManufacturerData(stringData)
+            
+            // Convert strings to appropriate numeric types
+            temperature = Double(tempStr)
+            humidity = Double(humidStr)
+            velocity = Double(velStr)
+            co2 = Int(carbonDioxideStr)
+        }
+        
+        if let index = deviceIndex {
             // Update existing device
             var updatedDevice = devices[index]
             updatedDevice.rssi = rssi
             updatedDevice.name = deviceName
             
-            // Update sensor values if they are available
-            if let temp = sensorData.temperature {
-                updatedDevice.temperature = temp
-            }
-            
-            if let humidity = sensorData.humidity {
-                updatedDevice.humidity = humidity
-            }
-            
-            if let velocity = sensorData.velocity {
-                updatedDevice.velocity = velocity
-            }
-            
-            if let co2 = sensorData.co2 {
-                updatedDevice.co2 = co2
-            }
+            // Only update values if we got new data
+            if let temperature { updatedDevice.temperature = temperature }
+            if let humidity { updatedDevice.humidity = humidity }
+            if let velocity { updatedDevice.velocity = velocity }
+            if let co2 { updatedDevice.co2 = co2 }
             
             devices[index] = updatedDevice
         } else {
@@ -176,15 +134,31 @@ class BluetoothManager: NSObject, ObservableObject {
                 id: peripheral.identifier,
                 name: deviceName,
                 rssi: rssi,
-                temperature: sensorData.temperature,
-                humidity: sensorData.humidity,
-                velocity: sensorData.velocity,
-                co2: sensorData.co2
+                temperature: temperature,
+                humidity: humidity,
+                velocity: velocity,
+                co2: co2
             )
             
             devices.append(newDevice)
-            discoveredPeripherals[identifier] = peripheral
+            discoveredPeripherals[id] = peripheral
         }
+    }
+    
+    private func parseManufacturerData(_ data: String) -> (String, String, String, String) {
+        let components = data.components(separatedBy: ",")
+        
+        guard components.count >= 4 else {
+            print("Warning: Invalid data format: \(data)")
+            return ("", "", "", "")
+        }
+        
+        return (
+            components[0].trimmingCharacters(in: .whitespacesAndNewlines),
+            components[1].trimmingCharacters(in: .whitespacesAndNewlines),
+            components[2].trimmingCharacters(in: .whitespacesAndNewlines),
+            components[3].trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 }
 
@@ -192,33 +166,41 @@ class BluetoothManager: NSObject, ObservableObject {
 
 extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        bluetoothState = central.state
+        
         switch central.state {
         case .poweredOn:
             print("Bluetooth is powered on")
-            // Auto-start scanning when Bluetooth is ready
             if isScanning {
                 startScanning()
             }
         case .poweredOff:
             print("Bluetooth is powered off")
             isScanning = false
-        case .resetting:
-            print("Bluetooth is resetting")
-        case .unauthorized:
-            print("Bluetooth is unauthorized")
-        case .unsupported:
-            print("Bluetooth is unsupported")
-        case .unknown:
-            print("Bluetooth state is unknown")
-        @unknown default:
-            print("Unknown Bluetooth state")
+            devices.removeAll()
+        default:
+            print("Bluetooth state changed: \(central.state)")
+            isScanning = false
         }
     }
     
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        // Process discovered device
-        DispatchQueue.main.async {
-            self.updateDevice(peripheral: peripheral, rssi: RSSI.intValue, advertisementData: advertisementData)
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
+                      advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        Task { @MainActor in
+            updateDevice(peripheral: peripheral, rssi: RSSI.intValue, advertisementData: advertisementData)
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            for peripheral in peripherals {
+                print("Restored peripheral: \(peripheral.name ?? "Unknown")")
+                discoveredPeripherals[peripheral.identifier] = peripheral
+            }
+        }
+        
+        if isScanning && central.state == .poweredOn {
+            startScanning()
         }
     }
 }

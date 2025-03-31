@@ -8,26 +8,18 @@
 import SwiftUI
 
 struct DeviceListView: View {
-    // Use the BluetoothManager to handle BLE scanning
-    @ObservedObject private var bluetoothManager = BluetoothManager()
+    // Use the BluetoothManager with the new Observation framework
+    @State private var bluetoothManager = BluetoothManager()
     
-    // Reference the devices from the BluetoothManager
-    private var devices: [BluetoothDevice] {
-        bluetoothManager.devices
-    }
-    
-    // Use the scanning state from the BluetoothManager
-    private var isScanning: Bool {
-        bluetoothManager.isScanning
-    }
+    // No longer need these computed properties since we can directly access observed properties
     @State private var searchText: String = ""
     
     // Filtered devices based on search text
     private var filteredDevices: [BluetoothDevice] {
         if searchText.isEmpty {
-            return devices
+            return bluetoothManager.devices
         } else {
-            return devices.filter { device in
+            return bluetoothManager.devices.filter { device in
                 device.name.lowercased().contains(searchText.lowercased())
             }
         }
@@ -37,13 +29,13 @@ struct DeviceListView: View {
         VStack {
             // Scanning status header
             HStack {
-                Image(systemName: isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                Image(systemName: bluetoothManager.isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
                     .font(.system(size: 14))
-                    .foregroundColor(isScanning ? .blue : .gray)
+                    .foregroundColor(bluetoothManager.isScanning ? .blue : .gray)
                 
-                Text(isScanning ? "Scanning for devices..." : "Scan paused")
+                Text(bluetoothManager.isScanning ? "Scanning for devices..." : "Scan paused")
                     .font(.caption)
-                    .foregroundColor(isScanning ? .primary : .secondary)
+                    .foregroundColor(bluetoothManager.isScanning ? .primary : .secondary)
                 
                 Spacer()
                 
@@ -54,12 +46,12 @@ struct DeviceListView: View {
                         bluetoothManager.startScanning()
                     }
                 }) {
-                    Text(isScanning ? "Stop" : "Start")
+                    Text(bluetoothManager.isScanning ? "Stop" : "Start")
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 4)
-                        .background(isScanning ? Color.red.opacity(0.2) : Color.blue.opacity(0.2))
-                        .foregroundColor(isScanning ? .red : .blue)
+                        .background(bluetoothManager.isScanning ? Color.red.opacity(0.2) : Color.blue.opacity(0.2))
+                        .foregroundColor(bluetoothManager.isScanning ? .red : .blue)
                         .cornerRadius(12)
                 }
             }
