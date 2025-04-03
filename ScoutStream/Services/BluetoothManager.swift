@@ -76,6 +76,27 @@ final class BluetoothManager: NSObject {
         return name.localizedCaseInsensitiveContains("scout")
     }
     
+    private func processManufacturerData(_ manufacturerData: Data) -> (String, String, String, String) {
+        // Skip the first 2 bytes (company identifier "3101")
+        guard manufacturerData.count > 2 else {
+            return ("", "", "", "")
+        }
+        
+        // Extract the data portion (skip company ID)
+        let dataBytes = manufacturerData.subdata(in: 2..<manufacturerData.count)
+        
+        // Try to convert to ASCII string
+        if let asciiString = String(data: dataBytes, encoding: .ascii) {
+            print("Processed data (after removing company ID): \(asciiString)")
+            
+            if asciiString.contains(",") {
+                return parseManufacturerData(asciiString)
+            }
+        }
+        
+        return ("", "", "", "")
+    }
+    
     private func updateDevice(peripheral: CBPeripheral, rssi: Int, advertisementData: [String: Any]) {
         // Get device name (use identifier if no name is available)
         let deviceName = peripheral.name ??
@@ -98,21 +119,22 @@ final class BluetoothManager: NSObject {
         var co2 = existingDevice?.co2
         
         // Process manufacturer data if available
-        if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
-           let stringData = String(data: manufacturerData, encoding: .utf8),
-           stringData.contains(",") {
-            
+        if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
             print("Raw manufacturer data: \(manufacturerData as NSData)")
+            print("Hex data: \(manufacturerData.hexDescription)")
             
-            print("Device: \(deviceName), Data: \(stringData)")
+            // Always use the processManufacturerData method which removes the company ID
+            let (tempStr, humidStr, velStr, carbonDioxideStr) = processManufacturerData(manufacturerData)
             
-            let (tempStr, humidStr, velStr, carbonDioxideStr) = parseManufacturerData(stringData)
+            // Convert strings to appropriate numeric types if we got valid values
+            if !tempStr.isEmpty { temperature = Double(tempStr) }
+            if !humidStr.isEmpty { humidity = Double(humidStr) }
+            if !velStr.isEmpty { velocity = Double(velStr) }
+            if !carbonDioxideStr.isEmpty { co2 = Int(carbonDioxideStr) }
             
-            // Convert strings to appropriate numeric types
-            temperature = Double(tempStr)
-            humidity = Double(humidStr)
-            velocity = Double(velStr)
-            co2 = Int(carbonDioxideStr)
+            if !tempStr.isEmpty {
+                print("Processed sensor values - Temp: \(tempStr)°C, Humidity: \(humidStr)%, Velocity: \(velStr)m/s, CO2: \(carbonDioxideStr)ppm")
+            }
         }
         
         if let index = deviceIndex {
